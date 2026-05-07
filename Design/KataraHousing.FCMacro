@@ -1,0 +1,201 @@
+# KataraHousing.FCMacro
+# Pi 5 + Camera housing for the Katara squirrel deterrent turret
+#
+# Coordinate system:
+#   X: left → right  (width)
+#   Y: front → back  (depth)
+#   Z: bottom → top  (height)
+#
+# Front face (Y = 0):  camera looks out through lens hole
+# Open face  (Z = H):  lid drops on top and screws down into corner bosses
+#
+# Run via FreeCAD: Macro > Macros... > Execute
+
+import FreeCAD
+import Part
+
+doc = FreeCAD.newDocument("KataraHousing")
+
+# ─── Parameters (all mm) ──────────────────────────────────────────────────────
+
+WALL = 3.0
+
+W = 130.0   # outer width  (X)
+D =  80.0   # outer depth  (Y, front-to-back)
+H =  95.0   # outer height (Z)
+
+# Pi 5 board: 85 × 56 mm, M2.5 mounting holes
+PI_W = 85.0
+PI_D = 56.0
+STANDOFF_H = 7.0   # boss height above inner floor surface
+STANDOFF_R = 4.0   # boss outer radius
+M25_R      = 1.4   # M2.5 screw clearance (self-tap or brass insert)
+
+# Hole offsets relative to Pi board corner
+# First value along 85 mm edge (X), second along 56 mm edge (Y)
+PI_HOLES = [
+    ( 3.5,  3.5),
+    (61.5,  3.5),
+    ( 3.5, 52.5),
+    (61.5, 52.5),
+]
+
+# Camera hole — front face, centred, upper portion
+CAM_R = 6.0          # lens aperture radius (12 mm diameter)
+CAM_X = W / 2
+CAM_Z = H * 0.62     # ~59 mm up from floor
+
+# Cable gland — floor, roughly centred, toward back
+# Bundles: USB-C power in + GPIO wires out to relay/pump
+CABLE_R = 8.0
+CABLE_X = W / 2
+CABLE_Y = D * 0.65
+
+# Lid corner bosses — M3 screw-down lid
+LID_BOSS_R = 4.0
+LID_BOSS_H = 8.0     # tall enough for a M3 self-tapping screw to bite
+M3_R       = 1.6     # M3 tap clearance
+INSET      = 8.0     # distance from inner wall corner to boss centre
+
+# Lofted (filleted) vertical edges
+FILLET_R     = 15.0  # outer corner radius on the 4 vertical side edges
+LID_FILLET_R =  2.0  # softer fillet on the lid's top perimeter
+
+# ─── Helper ───────────────────────────────────────────────────────────────────
+
+def vertical_edges(shape):
+    """Return edges that run purely along Z (dx ≈ 0, dy ≈ 0, dz > 0)."""
+    result = []
+    for e in shape.Edges:
+        verts = e.Vertexes
+        if len(verts) == 2:
+            p0, p1 = verts[0].Point, verts[1].Point
+            if abs(p1.x - p0.x) < 0.01 and abs(p1.y - p0.y) < 0.01 and abs(p1.z - p0.z) > 0.1:
+                result.append(e)
+    return result
+
+def horizontal_top_edges(shape, z_top):
+    """Return edges that lie in the horizontal plane at z_top."""
+    result = []
+    for e in shape.Edges:
+        verts = e.Vertexes
+        if all(abs(v.Point.z - z_top) < 0.01 for v in verts):
+            result.append(e)
+    return result
+
+# ─── 1. Shell (floor + 4 walls, open top) ────────────────────────────────────
+
+outer = Part.makeBox(W, D, H)
+
+# Fillet the 4 vertical outer edges before hollowing
+outer = outer.makeFillet(FILLET_R, vertical_edges(outer))
+
+# Cavity: WALL thick on floor and all 4 sides; top is open for component access.
+# The cavity vertical edges are filleted with (FILLET_R - WALL) so the cavity
+# mirrors the outer contour — corners stay fully solid with uniform wall thickness.
+inner = Part.makeBox(W - 2*WALL, D - 2*WALL, H - WALL + 1)
+inner.translate(FreeCAD.Vector(WALL, WALL, WALL))
+inner_r = FILLET_R - WALL
+inner = inner.makeFillet(inner_r, vertical_edges(inner))
+body = outer.cut(inner)
+
+# ─── 2. Camera hole — through front wall (Y = 0 … WALL) ──────────────────────
+# makeCylinder default axis is +Z; rotate -90° around X → axis becomes +Y
+
+cam = Part.makeCylinder(CAM_R, WALL + 2)
+cam.rotate(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1, 0, 0), -90)
+cam.translate(FreeCAD.Vector(CAM_X, -1, CAM_Z))
+body = body.cut(cam)
+
+# ─── 3. Cable gland — through floor (Z = 0 … WALL) ───────────────────────────
+
+cable = Part.makeCylinder(CABLE_R, WALL + 2)
+cable.translate(FreeCAD.Vector(CABLE_X, CABLE_Y, -1))
+body = body.cut(cable)
+
+# ─── 4. Pi 5 standoff bosses ──────────────────────────────────────────────────
+# Pi board centred left-right; front edge 5 mm behind inner front wall face.
+# CSI connector faces toward the front wall for a short camera ribbon cable run.
+# USB-C power and GPIO face toward the back for wiring access.
+
+pi_x0 = (W - PI_W) / 2   # 22.5 mm: Pi left edge in housing X coords
+pi_y0 = WALL + 5.0        # 8 mm: Pi front edge in housing Y coords
+
+for ox, oy in PI_HOLES:
+    bx, by = pi_x0 + ox, pi_y0 + oy
+
+    boss = Part.makeCylinder(STANDOFF_R, WALL + STANDOFF_H)
+    boss.translate(FreeCAD.Vector(bx, by, 0))
+    body = body.fuse(boss)
+
+    # Through-hole from box floor up through boss (screw from below or insert from top)
+    hole = Part.makeCylinder(M25_R, WALL + STANDOFF_H + 1)
+    hole.translate(FreeCAD.Vector(bx, by, 0))
+    body = body.cut(hole)
+
+# ─── 5. Lid corner bosses (inside cavity, top corners) ───────────────────────
+
+CORNERS = [
+    (WALL + INSET,     WALL + INSET),
+    (W - WALL - INSET, WALL + INSET),
+    (WALL + INSET,     D - WALL - INSET),
+    (W - WALL - INSET, D - WALL - INSET),
+]
+
+for bx, by in CORNERS:
+    boss = Part.makeCylinder(LID_BOSS_R, LID_BOSS_H)
+    boss.translate(FreeCAD.Vector(bx, by, H - LID_BOSS_H))
+    body = body.fuse(boss)
+
+    hole = Part.makeCylinder(M3_R, LID_BOSS_H + 1)
+    hole.translate(FreeCAD.Vector(bx, by, H - LID_BOSS_H - 0.5))
+    body = body.cut(hole)
+
+housing_obj       = doc.addObject("Part::Feature", "Housing")
+housing_obj.Shape = body
+
+# ─── 6. Lid ───────────────────────────────────────────────────────────────────
+# Flat plate (W × D) that sits on the sealed roof and screws down into the
+# corner bosses. Add a rubber gasket between lid and roof for weatherproofing.
+
+LID_T = 3.0
+
+lid = Part.makeBox(W, D, LID_T)
+
+# M3 through-holes matching the corner boss positions
+for bx, by in CORNERS:
+    lh = Part.makeCylinder(M3_R, LID_T + 2)
+    lh.translate(FreeCAD.Vector(bx, by, -1))
+    lid = lid.cut(lh)
+
+# Soften the top perimeter edges of the lid plate
+top_edges = horizontal_top_edges(lid, LID_T)
+if top_edges:
+    lid = lid.makeFillet(LID_FILLET_R, top_edges)
+
+# Show lid floating 12 mm above the box for clarity
+lid.translate(FreeCAD.Vector(0, 0, H + 12))
+
+lid_obj       = doc.addObject("Part::Feature", "Lid")
+lid_obj.Shape = lid
+
+# ─── View ─────────────────────────────────────────────────────────────────────
+
+doc.recompute()
+
+try:
+    import FreeCADGui as Gui
+    Gui.activeDocument().activeView().viewIsometric()
+    Gui.SendMsgToActiveView("ViewFit")
+except Exception:
+    pass
+
+print("─── KataraHousing generated ────────────────────────────")
+print(f"  Outer envelope  : {W} × {D} × {H} mm")
+print(f"  Wall thickness  : {WALL} mm")
+print(f"  Side edge fillet: R{FILLET_R} mm")
+print(f"  Camera hole     : ⌀{CAM_R*2:.0f} mm  at X={CAM_X:.0f}  Z={CAM_Z:.1f}")
+print(f"  Cable gland     : ⌀{CABLE_R*2:.0f} mm  on floor at X={CABLE_X:.0f}  Y={CABLE_Y:.0f}")
+print(f"  Pi 5 standoffs  : 4 × ⌀{STANDOFF_R*2:.0f} mm boss, {STANDOFF_H:.0f} mm tall, M2.5 hole")
+print(f"  Lid bosses      : 4 × ⌀{LID_BOSS_R*2:.0f} mm boss, {LID_BOSS_H:.0f} mm tall, M3 hole")
+print(f"  Lid             : {W:.0f} × {D:.0f} × {LID_T:.0f} mm plate (add rubber gasket for seal)")
