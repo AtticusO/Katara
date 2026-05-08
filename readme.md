@@ -22,4 +22,6 @@ YOLOv8n.predict(frame)
      │  
      ├─ detects "bird" (confidence > 0.6) ──→ save photo, do nothing  
      │  
-     └─ no bird detected, but motion exists ──→ trigger relay → spray  
+     └─ detects "squirrel" (confidence > 0.6) ──→ save photo, fire, save photo
+     |
+     └─ detects nothing, but motion exist , save photo
